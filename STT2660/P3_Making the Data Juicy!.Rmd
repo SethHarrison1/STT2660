@@ -1,0 +1,383 @@
+---
+title: "Data Science Project 3<br>Making the Data Juicy!"
+author: "Seth Harrison"
+date: '`r format(Sys.time(), "%B %d, %Y @ %I:%M %p")`'
+output: 
+  html_document:
+    toc: true
+    depth: 3
+    theme: yeti
+    highlight: textmate
+---
+
+```{r global_options, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, comment = "")
+```
+
+```{r}
+library(dplyr)
+library(tidyverse)
+library(tidyr)
+library(XLConnect)
+library(stringi)
+library(XML)
+library(blscrapeR)
+```
+
+<hr>
+
+## Purpose
+
+To quote the folks at the data visualization website [information is beautiful](https://informationisbeautiful.net/data/), "...80% of the work involved in creating an infographic is data-gathering, shaping and checking. Making the data juicy." You will flex data science skills you have acquired this semester to read in, assemble, clean, and code datasets. For this project you will submit this Markdown document contianing all your code and an `Rdata` file containing the datasets you made. You will be graded on both correctness and efficiency.
+
+
+### Gapminder World
+
+The [Gapminder](https://www.gapminder.org) web site contains a variety of health, wealth, political, social, and environmental data for countries all around the world. The `gapminderSTT2860F19.xlsx` workbook, which you can download from AsULearn, contains various sociopolitical country ratings downloaded from [Gapminder Data](http://gapm.io/dpop), as well as country region and code data obtained from the United Nations.
+
+* countries (downloaded from https://unstats.un.org/unsd/methodology/m49/)
+* democracy score (explained at https://www.systemicpeace.org/polityproject.html)
+* corruption perception index (explained at https://www.transparency.org/cpi2018)
+* human development index (explained at http://hdr.undp.org/en/content/human-development-index-hdi)
+
+### Create Dataset #1
+
+* Read in all of the worksheets from the Excel workbook. For each of the democracy, corruption, and development sheets, use `gather()` or `pivot_longer()` to tidy the data so that the file has three variables: `country`, `year`, and the score (see names in the dataset structure below).
+
+```{r worksheets}
+myBook <- loadWorkbook("./gapminderSTT2860F19.xlsx")
+getSheets(myBook)
+countries <- readWorksheet(myBook, 1)
+democracyScore <- readWorksheet(myBook, 2) %>%
+  pivot_longer(-country, names_to = "year", values_to = "democracy")
+democracyScore$year <- sub('.', '', democracyScore$year)
+democracyScore$year <- as.numeric(as.character(democracyScore$year))
+corruptionIndex <- readWorksheet(myBook, 3) %>% pivot_longer(-country, names_to = "year", values_to = "corruption")
+corruptionIndex$year <- sub('.', '', corruptionIndex$year)
+corruptionIndex$year <- as.numeric(as.character(corruptionIndex$year))
+humanDevIndex <- readWorksheet(myBook, 4) %>% pivot_longer(-country, names_to = "year", values_to = "development")
+humanDevIndex$year <- sub('.', '', humanDevIndex$year)
+humanDevIndex$year <- as.numeric(as.character(humanDevIndex$year))
+```
+
+* Use your data files to create a single dataset called `worldscores`. It should be limited to data from the 21st century (i.e., 2001 and beyond), include countries that appear in *any* of the three Gapminder sheets (democracy score, corruption perception index, or human development index), and contain the following variables. Verify this structure using `glimpse()`.
+
+    * `name` (chr) -- country name
+    * `region` (chr) -- UN region
+    * `subregion` (chr) -- UN subregion
+    * `M49code` (num) -- UN M49 code
+    * `ISOcode` (chr) -- UN ISO 3166-1 alpha-3 code
+    * `year` (num) -- year
+    * `development` (num) -- human development index
+    * `corruption` (num) -- corruption perception index
+    * `democracy` (num) -- democracy score
+    * `dem_cat` (fct) -- an ordered factor variable indicating whether a country is an autocracy (score of -10 to -6), an anocracy (score of -5 to +5), or a democracy (score of +6 to +10)
+
+ 
+
+```{r worldscores}
+corruptdemoc <- democracyScore %>% full_join(corruptionIndex, by = c("year", "country"))
+corruptdemochuman <- corruptdemoc %>% full_join(humanDevIndex, by = c("year", "country"))
+worldscores <- countries %>% full_join(corruptdemochuman, by = c("Country" = "country")) %>% filter(year >= 2001) %>% arrange(Country) %>% rename("ISOcode" = "ISOalpha3code")
+dem_cat <- as.character(numeric(3200))
+for (n in 1:3200){
+  if (is.na(worldscores$democracy[n])){
+    dem_cat[n] <- NA
+  }
+  else if (worldscores$democracy[n] <= -11 || worldscores$democracy[n] > 10){
+    dem_cat[n] <- NA
+  }  
+  else if (worldscores$democracy[n] > -11 && worldscores$democracy[n] <= -6){
+    dem_cat[n] <- "autocracy"
+  }
+  else if (worldscores$democracy[n] > -6 && worldscores$democracy[n] <= 5){
+    dem_cat[n] <- "anocracy"
+  }
+  else if(worldscores$democracy[n] > 5 && worldscores$democracy[n] <= 10){
+    dem_cat[n] <- "democracy"
+  }
+}
+dem_cat <- as.factor(dem_cat)
+worldscores <- cbind(worldscores, dem_cat)
+glimpse(worldscores)
+```
+
+* Determine how many missing values there are in each variable, and how many rows in your dataset have complete data (i.e., no missing values for any variable).  
+
+```{r missingvalues}
+any(is.na(worldscores$Country))
+any(is.na(worldscores$Region))
+any(is.na(worldscores$Subregion))
+any(is.na(worldscores$M49code))
+any(is.na(worldscores$ISOcode))
+any(is.na(worldscores$year))
+any(is.na(worldscores$democracy))
+any(is.na(worldscores$corruption))
+any(is.na(worldscores$development))
+any(is.na(worldscores$dem_cat))
+# Only year and country do not have any missing values
+message("There are " , sum(is.na(worldscores$Region)), " missing values in Region")
+message("There are " , sum(is.na(worldscores$Subregion)), " missing values in Subregion")
+message("There are " , sum(is.na(worldscores$M49code)), " missing values in M49code")
+message("There are " , sum(is.na(worldscores$ISOcode)), " missing values in ISOcode")
+message("There are " , sum(is.na(worldscores$democracy)), " missing values in democracy")
+message("There are " , sum(is.na(worldscores$corruption)), " missing values in corruption")
+message("There are " , sum(is.na(worldscores$development)), " missing values in development")
+message("There are " , sum(is.na(worldscores$dem_cat)), " missing values in dem_cat")
+message("There are ", sum(!complete.cases(worldscores)))
+```
+
+
+### Powerball Jackpots
+
+[Powerball](https://www.powerball.com/games/powerball) is popular American lottery game offered by forty-four states, as well as the District of Columbia, Puerto Rico and the US Virgin Islands. It is coordinated by the non-profit [Multi-State Lottery Association (MUSL)](https://www.musl.com/). 
+
+* Powerball® costs $2 per play. 
+* Select five numbers from 1 to 69 for the white balls; then select one number from 1 to 26 for the red Powerball.
+* Choose your numbers on a play slip or let the lottery terminal randomly pick your numbers.
+* Jackpots start at $40 million and grow from there!
+* Players win a prize by matching one of the 9 Ways to Win.
+
+Drawings are supposed to be random and independent, with all white balls are equally likely to be chosen. The same is true of red balls. Players have always selected five white balls and one red ball. However, the Powerball lottery has had different rulesets over time with respect to how many white and red balls there are for players to choose from, which affects the chances of winning the various prizes. The Jackpot increases in value until someone wins and then it resets to its minimum value. This minimum has also changed over time. You can read about changes over time in the [Powerball](https://en.wikipedia.org/wiki/Powerball) Wikipedia article and on the `History` tab of the [About Powerball](https://www.powerball.com/about) page of the Powerball website.
+
+### Create Dataset #2
+
+* Go to the [Lottery Powerball Winning Numbers](https://catalog.data.gov/dataset/lottery-powerball-winning-numbers-beginning-2010) page of the Data Catalogue on the federal data repository website [data.gov](https://www.data.gov/). Right-click the <span style="font-size: 12px; color: #ffffff; background-color: #19657D; padding: 2px;"><i class="fa fa-download"></i> Download</span> button for the CSV file to get the web link and use that to import the dataset into RStudio using `read_csv()`. Notice that whomever formatted the data put all six lottery numbers into a single column, with the five white ball values listed in order from smallest to largest, followed by the value of the red ball. When you read in the data, also do the following coding and cleaning operations and then use `glimpse()` to show the structure. 
+
+    * Remove the multiplier information variable from the dataset.
+    * Change the class of the drawing date variable from `chr` to `date`.
+    * Split the winning numbers column into six separate numeric columns.
+    * Remove the original winning numbers string variable from the dataset.
+    * Rename variables as needed to get workable names for cleaning and joining.
+
+```{r winningnumbers}
+lottery <- read_csv("./Lottery_Powerball_Winning_Numbers__Beginning_2010.csv") %>% select(-c("Multiplier")) %>% separate(col = "Winning Numbers", into = c("NUM1", "NUM2", "NUM3", "NUM4", "NUM5", "NUMRED"), sep = " ")
+lottery$`Draw Date` <- as.Date(lottery$`Draw Date`, "%m/%d/%Y")
+glimpse(lottery)
+```
+
+* Search the web and find the winning numbers for Powerball drawings in January 2010, which are missing from the winning numbers dataset. Use create a data frame and use `rbind()` to add that information the dataset above. Use `glimpse()` to show the structure.
+
+```{r add2010numbers}
+lottodates <- as.Date(c("2010-01-2", "2010-01-06", "2010-01-09", "2010-01-13", "2010-01-16", "2010-01-20", "2010-01-23", "2010-01-27", "2010-01-30"))
+lottonumbers <- c("3 7 23 27 42 37", "20 27 29 56 58 31", "20 41 44 50 54 22", "8 11 15 32 50 27", "7 8 23 41 55 23", "15 32 43 44 46 19", "15 16 20 42 53 17", "6 15 20 26 31 9", "6 26 35 47 48 21")
+janlotto <- data.frame(lottodates, lottonumbers) %>% separate(col = "lottonumbers", into = c("NUM1", "NUM2", "NUM3", "NUM4", "NUM5", "NUMRED"), sep = " ") 
+janlotto <- rename(janlotto, "Draw Date" = "lottodates")
+fullLottery <- rbind(janlotto, lottery)
+glimpse(fullLottery)
+```
+
+
+* Use the code given below to scrape the values of the Powerball jackpots from the [Jackpot History](http://www.lottofactor.com/script/jackpot_history/draw_date/101) page of TinBu LLC's [Lotto Factor](http://www.lottofactor.com/) website. Note that by the site's [Terms of Service](http://www.lottofactor.com/script/showpage/1001030/m/terms.html) these data are copyrighted in this form. However, we may use them for personal academic purposes as long at they are not publicly displayed. I did a a small amount of pre-cleaning to remove a "noise" character from the data (which can happen with HTML tables) and some extraneous space. When you read in the data, also do the following coding and cleaning operations and then use `glimpse()` to show the structure. 
+
+    * Remove the information about the change in Jackpot values.
+    * Split the drawing day-date information into separate columns.
+    * Change the class of the drawing date variable from `chr` to `date`.
+    * Remove extra symbols and convert Jackpot amounts into numeric data.
+    * Rename variables as needed to get workable names for cleaning and joining.
+
+```{r jackpotvalues}
+# requires the package XML
+url <- "http://www.lottofactor.com/script/jackpot_history/draw_date/101"
+jackpot_vals <- readHTMLTable(url)[[18]] %>% 
+  mutate_all(~ str_replace(., pattern = "Â", replacement = ""),
+             ~ str_trim(., "both")) %>%
+  select(-3) %>% 
+  separate(col = 1, into = c("day", "date"), sep = " ")
+  
+jackpot_vals$date <- as.Date(jackpot_vals$`date`, "%m/%d/%Y")
+jackpot_vals$`Â Jackpot Amount` <- sub('.', '', jackpot_vals$`Â Jackpot Amount`)
+jackpot_vals$`Â Jackpot Amount` <- sub('.', '', jackpot_vals$`Â Jackpot Amount`)
+jackpot_vals <- jackpot_vals %>% separate(col = 3, into = c("amount", "useless"), sep = " ")
+jackpot_vals <- jackpot_vals %>% select(-4)
+jackpot_vals$amount <- as.numeric(jackpot_vals$amount)
+jackpot_vals$amount <- jackpot_vals$amount * 1000000
+glimpse(jackpot_vals)
+```
+
+* Use the code given below to read a dataset that includes value inflation adjustments for US dollars in prior years based on the value of the 2019 dollar. It uses Consumer Price Index (CPI) information scraped from the [Bureau of Labor Statistics](https://www.bls.gov/). For example, one 2002 dollar is equivalent to 71 cents in 2019 with respect to its purchasing power. Another way to think about it is that we need $1 / 0.71 = $1.41 today to purchase the same item or service we could have bought for $1 in 2002. Thus, a windfall of $1 million would be relatively greater in 2002 than 2019; back then what you could buy for $1 million would cost $1,408,451 now. Convert `year` and `base_year` into numeric variables, then use `glimpse()` to show the structure.
+
+```{r inflationvalues}
+# requires the package blscrapeR
+inflation_adj <- inflation_adjust(2019)
+inflation_adj$year <- as.numeric(inflation_adj$year)
+inflation_adj$base_year <- as.numeric(inflation_adj$base_year)
+glimpse(inflation_adj)
+```
+
+* Use your data files to create a single dataset called `powerball`. It should be limited to the time span from January 2010 to the present and contain the following variables. Verify this structure using `glimpse()`.
+
+    * `drawdate` (date) -- date the drawing took place in yyyy-mm-dd format
+    * `drawday` (chr) -- day of the week on which the drawing took place
+    * `ballcolor` (chr) -- whether the ball was `white` or `powerball` (red)
+    * `ballvalue` (num) -- the numerical value of the white or red ball
+    * `jackpot_actual` (num) -- dollar value of the jackpot (in millions)
+    * `jackpot_inflat` (num) -- jackpot value inflated to 2019 dollars
+
+```{r powerball, warning=FALSE, message=FALSE}
+inflation_adjT <- inflation_adj %>% filter(year >= 2010)
+jackpot_valsT <- jackpot_vals %>% filter(date >= as.Date("10-01-01")) %>% arrange(date)
+
+#powerball color variable created
+powerballBallColor <- numeric(length = 6 * length(fullLottery$`Draw Date`))
+for(n in seq(1, 6 * length(fullLottery$`Draw Date`), 6)){
+  powerballBallColor[n] <- "white"  
+  powerballBallColor[n+1] <- "white" 
+  powerballBallColor[n+2] <- "white" 
+  powerballBallColor[n+3] <- "white" 
+  powerballBallColor[n+4] <- "white" 
+  powerballBallColor[n+5] <- "powerball" 
+}
+
+#create powerball draw date value
+powerballDrawDate <- numeric(length = 6 * length(fullLottery$`Draw Date`))
+class(powerballDrawDate) <- "Date"
+for (n in seq(0, 1027,1)) {
+  powerballDrawDate[(n*6)+1] <- as.Date(fullLottery$`Draw Date`[n+1])
+}
+for (n in seq(0, 1027,1)) {
+  powerballDrawDate[(n*6)+2] <- as.Date(fullLottery$`Draw Date`[n+1])
+}
+for (n in seq(0, 1027,1)) {
+  powerballDrawDate[(n*6)+3] <- as.Date(fullLottery$`Draw Date`[n+1])
+}
+for (n in seq(0, 1027,1)) {
+  powerballDrawDate[(n*6)+4] <- as.Date(fullLottery$`Draw Date`[n+1])
+}
+for (n in seq(0, 1027,1)) {
+  powerballDrawDate[(n*6)+5] <- as.Date(fullLottery$`Draw Date`[n+1])
+}
+for (n in seq(0, 1027,1)) {
+  powerballDrawDate[(n*6)+6] <- as.Date(fullLottery$`Draw Date`[n+1])
+}
+#create powerball draw day value
+powerballDrawDay <- numeric(length = 6 * length(fullLottery$`Draw Date`))
+for (n in seq(0, 1027,1)) {
+  powerballDrawDay[(n*6)+1] <- jackpot_valsT$day[n+1]
+}
+for (n in seq(0, 1027,1)) {
+  powerballDrawDay[(n*6)+2] <- jackpot_valsT$day[n+1]
+}
+for (n in seq(0, 1027,1)) {
+  powerballDrawDay[(n*6)+3] <- jackpot_valsT$day[n+1]
+}
+for (n in seq(0, 1027,1)) {
+  powerballDrawDay[(n*6)+4] <- jackpot_valsT$day[n+1]
+}
+for (n in seq(0, 1027,1)) {
+  powerballDrawDay[(n*6)+5] <- jackpot_valsT$day[n+1]
+}
+for (n in seq(0, 1027,1)) {
+  powerballDrawDay[(n*6)+6] <- jackpot_valsT$day[n+1]
+}
+
+#create powerballValue values
+powerballValue <- numeric(length = 6 * length(fullLottery$`Draw Date`))
+for (n in seq(0, 1027,1)) {
+  powerballValue[(n*6)+1] <- fullLottery$NUM1[n+1]
+}
+for (n in seq(0, 1027,1)) {
+  powerballValue[(n*6)+2] <- fullLottery$NUM2[n+1]
+}
+for (n in seq(0, 1027,1)) {
+  powerballValue[(n*6)+3] <- fullLottery$NUM3[n+1]
+}
+for (n in seq(0, 1027,1)) {
+  powerballValue[(n*6)+4] <- fullLottery$NUM4[n+1]
+}
+for (n in seq(0, 1027,1)) {
+  powerballValue[(n*6)+5] <- fullLottery$NUM5[n+1]
+}
+for (n in seq(0, 1027,1)) {
+  powerballValue[(n*6)+6] <- fullLottery$NUMRED[n+1]
+}
+
+#create powerball jackpot actual $
+powerBallJackAct <- numeric(length = 6 * length(fullLottery$`Draw Date`))
+for (n in seq(1,length(fullLottery$`Draw Date`), 6)) {
+  powerBallJackAct[n] <- jackpot_valsT$amount[n]
+  powerBallJackAct[n+1] <- jackpot_valsT$amount[n]
+  powerBallJackAct[n+2] <- jackpot_valsT$amount[n]
+  powerBallJackAct[n+3] <- jackpot_valsT$amount[n]
+  powerBallJackAct[n+4] <- jackpot_valsT$amount[n]
+  powerBallJackAct[n+5] <- jackpot_valsT$amount[n]
+}
+powerBallJackAct <- numeric(length = 6 * length(fullLottery$`Draw Date`))
+for (n in seq(0, 1027,1)) {
+  powerBallJackAct[(n*6)+1] <- jackpot_valsT$amount[n+1]
+}
+for (n in seq(0, 1027,1)) {
+  powerBallJackAct[(n*6)+2] <- jackpot_valsT$amount[n+1]
+}
+for (n in seq(0, 1027,1)) {
+  powerBallJackAct[(n*6)+3] <- jackpot_valsT$amount[n+1]
+}
+for (n in seq(0, 1027,1)) {
+  powerBallJackAct[(n*6)+4] <- jackpot_valsT$amount[n+1]
+}
+for (n in seq(0, 1027,1)) {
+  powerBallJackAct[(n*6)+5] <- jackpot_valsT$amount[n+1]
+}
+for (n in seq(0, 1027,1)) {
+  powerBallJackAct[(n*6)+6] <- jackpot_valsT$amount[n+1]
+}
+
+#creating adjusted jackpot values
+powerBallJackAdj <- numeric(length = 6 * length(fullLottery$`Draw Date`))
+gyear <- substring(powerballDrawDate, 1,4)
+for (n in seq(1,6 * length(fullLottery$`Draw Date`))) {
+  if (gyear[n] == 2010){
+    x=-14.449032
+  }
+  if (gyear[n] == 2011){
+    x = -11.763029
+  }
+  if (gyear[n] == 2012){
+    x=-9.933708
+  }
+  if (gyear[n] == 2013){
+    x=-8.613362
+  }
+  if (gyear[n] == 2014){
+    x=-7.137044
+  }
+  if (gyear[n] == 2015){
+    x=-7.026089
+  }
+  if (gyear[n] == 2016){
+    x=-5.845303
+  }
+  if (gyear[n] == 2017){
+    x=-3.834217
+  }
+  if (gyear[n] == 2018){
+    x=-1.492195
+  }
+  if (gyear[n] == 2019){
+    x=0
+  }
+  powerBallJackAdj[n] <- (powerBallJackAct[n] * ((1+(x/100))))
+}
+
+powerball <- data.frame(powerballDrawDate, powerballDrawDay, powerballBallColor, powerballValue, powerBallJackAct, powerBallJackAdj)
+powerball <- powerball %>% rename("drawdate" = "powerballDrawDate",
+                                  "drawday" = "powerballDrawDay",
+                                  "ballcolor" = "powerballBallColor",
+                                  "ballvalue" = "powerballValue",
+                                  "jackpot_actual" = "powerBallJackAct",
+                                  "jackpot_adjusted" = "powerBallJackAdj")
+glimpse(powerball)
+```
+
+```{r}
+save(worldscores, powerball, file = "myData.RData")
+```
+
+
+<hr>
+
+```{r}
+sessionInfo()
+```
+
+
